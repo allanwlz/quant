@@ -10,8 +10,9 @@ Each month, using only reports announced before that month's first trading day:
    c. TTM revenue ranked top ``top_n`` or top ``top_pct`` within the L2 industry.
 3. Listed for at least ``min_years``.
 
-Shenwan 2021 membership only starts in 2021 for most names, so earlier dates use each
-stock's first recorded industry (classification is stable; a mild look-ahead, noted).
+Shenwan membership carries in/out dates back to listing; a stock with no span covering
+the date falls back to its first recorded industry. Tushare returns the latest version of
+each report under its original announcement date, so restatements leak in slightly.
 """
 from dataclasses import dataclass
 
