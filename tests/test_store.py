@@ -37,3 +37,22 @@ def test_cn_day_normalises_units():
     row = bars.iloc[0]
     assert (row['volume'], row['amount'], row['adj_factor'], row['up_limit']) == (300, 4000, 1.5, 1.2)
     assert basic.iloc[0]['total_mv'] == 50000
+
+
+class FakeTickFlow:
+    def __init__(self):
+        self.calls = []
+
+    def daily(self, code, start, end):
+        self.calls.append(code)
+        return pd.DataFrame({'code': code, 'date': [date(2024, 1, 2), date(2024, 1, 3)], 'open': 1.0, 'high': 1.0,
+                             'low': 1.0, 'close': 1.0, 'volume': 1.0, 'amount': 0.0, 'adj_factor': 1.0})
+
+
+def test_overseas_skips_symbols_synced_today(tmp_path):
+    con = db.connect(tmp_path / 't.duckdb')
+    tf = FakeTickFlow()
+    assert sync.sync_overseas(con, tf, ['00700.HK', 'AAPL.US'], date(2024, 1, 1), date(2024, 1, 2)) == []
+    sync.sync_overseas(con, tf, ['00700.HK', 'AAPL.US'], date(2024, 1, 1), date(2024, 1, 2))
+    assert tf.calls == ['00700.HK', 'AAPL.US']
+    assert con.execute("SELECT max(date), max(amount) FROM bars").fetchone() == (date(2024, 1, 2), None)

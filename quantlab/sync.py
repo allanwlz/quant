@@ -160,11 +160,15 @@ def _ensure_security(con, code):
 def sync_overseas(con, tf, codes, start, end, overlap=10):
     """HK/US bars per symbol via TickFlow; incremental after the last stored date."""
     failed = []
+    synced_today = {r[0] for r in con.execute(
+        "SELECT key FROM sync_state WHERE task='tickflow' AND synced_at::DATE = current_date").fetchall()}
+    delisted = dict(con.execute('SELECT code, delist_date FROM securities WHERE delist_date IS NOT NULL').fetchall())
     for i, code in enumerate(codes, 1):
         last = con.execute('SELECT max(date) FROM bars WHERE code=?', [code]).fetchone()[0]
-        begin = max(start, last - timedelta(days=overlap)) if last else start
-        if last and last >= min(end, date.today()) - timedelta(days=1):
+        final = min(end, date.today(), delisted.get(code, date.max) - timedelta(days=7))
+        if code in synced_today or (last and last >= final):
             continue
+        begin = max(start, last - timedelta(days=overlap)) if last else start
         try:
             frame = tf.daily(code, begin, end)
         except Exception as exc:  # keep going; report at the end
@@ -179,6 +183,7 @@ def sync_overseas(con, tf, codes, start, end, overlap=10):
         frame['source'] = 'tickflow'
         db.upsert(con, 'bars', frame, ['code', 'date'])
         _ensure_security(con, code)
+        db.mark_done(con, 'tickflow', code, len(frame))
         if i % 25 == 0 or i == len(codes):
             log.info('海外 %d/%d %s：%d 条', i, len(codes), code, len(frame))
     return failed

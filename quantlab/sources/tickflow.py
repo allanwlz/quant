@@ -1,14 +1,17 @@
 """TickFlow daily klines for HK/US (same source the /invest site uses)."""
+import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pandas as pd
 
+log = logging.getLogger(__name__)
+
 
 class TickFlow:
-    def __init__(self, token='', client=None, interval=2.1, retries=4):
-        self.token, self.interval, self.retries = token, interval, retries
+    def __init__(self, token='', client=None, interval=2.1, retries=8, max_interval=10.0):
+        self.token, self.interval, self.retries, self.max_interval = token, interval, retries, max_interval
         self.base = 'https://api.tickflow.org' if token else 'https://free-api.tickflow.org'
         self.client = client or httpx.Client(timeout=60)
         self._last = 0.0
@@ -25,13 +28,21 @@ class TickFlow:
             self._last = time.monotonic()
             try:
                 response = self.client.get(self.base + '/v1/klines', params=params, headers=headers)
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise httpx.HTTPStatusError('retry', request=response.request, response=response)
-                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                log.warning('TickFlow %s 网络错误：%s', symbol, exc)
+                time.sleep(min(600, 30 * 2 ** attempt))
+                continue
+            if response.status_code == 200:
                 data = response.json().get('data') or {}
                 break
-            except (httpx.HTTPError, ValueError):
-                time.sleep(5 * 2 ** attempt)
+            # Throttled or failing: log what the server says, slow down for good, back off 30s → 10min.
+            log.warning('TickFlow %s %s：HTTP %s retry-after=%s %s', symbol, adjust, response.status_code,
+                        response.headers.get('retry-after'), response.text[:200])
+            if response.status_code not in (429,) and response.status_code < 500:
+                raise RuntimeError(f'TickFlow {symbol} {adjust}: HTTP {response.status_code}')
+            self.interval = min(self.max_interval, self.interval * 1.5)
+            retry_after = response.headers.get('retry-after', '')
+            time.sleep(float(retry_after) if retry_after.isdigit() else min(600, 30 * 2 ** attempt))
         else:
             raise RuntimeError(f'TickFlow {symbol} {adjust}: 重试 {self.retries} 次仍失败')
         frame = pd.DataFrame({k: data.get(k, []) for k in ('timestamp', 'open', 'high', 'low', 'close', 'volume', 'amount')})
