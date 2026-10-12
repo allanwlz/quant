@@ -29,6 +29,13 @@ def index_close(con, code, dates):
     return px.reindex(px.index.union(dates)).ffill().reindex(dates)
 
 
+def cash_rate(con, market, dates):
+    """Annual cash rate as a decimal on each date (forward-filled; 0 before the first quote)."""
+    rows = con.execute('SELECT date, rate FROM rates WHERE market=? ORDER BY date', [market]).df()
+    r = rows.set_index(pd.to_datetime(rows['date']))['rate'] / 100
+    return r.reindex(r.index.union(dates)).ffill().reindex(dates).fillna(0.0).to_numpy()
+
+
 def _month_end(raw):
     """Hold each month-end reading until the next month end."""
     idx = raw.index
@@ -66,21 +73,26 @@ def _periods(start, end):
     return {'all': (start, end), 'is': (start, pd.Timestamp(HOLDOUT) - pd.Timedelta(days=1)), 'oos': (HOLDOUT, end)}
 
 
-def evaluate(p, universe, algo, params, scale, start, mode, pools=20, pool_size=40, seed=0, cfg=backtest.Config(initial=1e8)):
+def evaluate(p, universe, algo, params, scale, start, mode, pools=20, pool_size=40, seed=0, cfg=backtest.Config(initial=1e8),
+             cash=None):
     """Metrics per period for every pool (or the one universe run), same pools across rules."""
     hold = signals.compute(p, algo, **params)
     first = np.searchsorted(p.dates, pd.Timestamp(start))
     hold[:first] = False
     runs = []
     if mode == 'universe':
-        runs.append(backtest.run(p, hold & universe if algo == 'buy_hold' else hold, universe, cfg, scale))
+        runs.append(backtest.run(p, hold & universe if algo == 'buy_hold' else hold, universe, cfg, scale, cash))
     else:
         rng = np.random.default_rng(seed)
         for _ in range(pools):
             pool = research.random_pools(universe, pool_size, rng) & universe
-            runs.append(backtest.run(p, (pool & hold) if algo == 'buy_hold' else hold, pool, cfg, scale))
+            runs.append(backtest.run(p, (pool & hold) if algo == 'buy_hold' else hold, pool, cfg, scale, cash))
     rows = []
     for i, result in enumerate(runs):
         for period, (lo, hi) in _periods(pd.Timestamp(start), p.dates[-1]).items():
-            rows.append({'pool': i, 'period': period, **backtest.metrics(result, lo, hi)})
+            m = backtest.metrics(result, lo, hi)
+            if cash is not None:   # Sharpe on return over cash, so sitting out is not flattered by low vol
+                inside = (p.dates >= pd.Timestamp(lo)) & (p.dates <= pd.Timestamp(hi))
+                m['xsharpe'] = (m['cagr'] - cash[inside].mean()) / m['vol'] if m['vol'] else np.nan
+            rows.append({'pool': i, 'period': period, **m})
     return pd.DataFrame(rows)

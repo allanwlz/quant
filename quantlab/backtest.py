@@ -11,6 +11,9 @@ Market timing: an optional ``scale`` series in [0, 1] multiplies every target. W
 changes, all candidates are resized regardless of the band, and when it falls, frozen
 holdings are trimmed by the same ratio (they are never added to).
 
+Idle cash earns ``cash_rate`` (annual, decimal, per day; default 0) so that sitting out
+is compared with a money-market alternative rather than with zero.
+
 Timing: decide on day t's close, trade at day t+1's open with slippage. CN buys
 are blocked when t+1 opens at the up limit, sells when it opens at the down limit;
 suspended securities cannot trade. Positions are tracked in back-adjusted units,
@@ -46,7 +49,7 @@ def _costs(value, rate, minimum, extra):
     return np.where(value > 0, np.maximum(value * rate, minimum), 0.0) + value * extra
 
 
-def run(panel, hold, entry_ok, cfg=Config(), scale=None):
+def run(panel, hold, entry_ok, cfg=Config(), scale=None, cash_rate=None):
     T, N = panel.shape
     rules = markets.RULES[panel.market]
     days = panel.dates.date
@@ -63,6 +66,8 @@ def run(panel, hold, entry_ok, cfg=Config(), scale=None):
     nav, exposure, npos, trades = np.empty(T), np.empty(T), np.empty(T, dtype=np.int32), []
 
     for t in range(T):
+        if cash_rate is not None and t and cash > 0:
+            cash *= 1 + cash_rate[t - 1] * (panel.dates[t] - panel.dates[t - 1]).days / 365
         value = q * price[t]
         total = cash + value.sum()
         nav[t], exposure[t], npos[t] = total, value.sum() / total, (q > 0).sum()

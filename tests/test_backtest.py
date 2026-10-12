@@ -131,3 +131,11 @@ def test_scale_cuts_candidates_and_frozen_alike():
     result = backtest.run(panel, hold, entry, backtest.Config(base_weight=0.5), scale)
     assert result.exposure.iloc[2] == pytest.approx(1.0, abs=0.01)
     assert result.exposure.iloc[4] == pytest.approx(0.5, abs=0.01)   # both halves trimmed on day 4
+
+
+def test_idle_cash_earns_rate():
+    panel = make_panel(np.full((253, 1), 10.0))
+    result = backtest.run(panel, np.zeros((253, 1), bool), np.ones((253, 1), bool), backtest.Config(), None,
+                          np.full(253, 0.03))
+    years = (panel.dates[-1] - panel.dates[0]).days / 365
+    assert result.nav.iloc[-1] / result.nav.iloc[0] == pytest.approx((1 + 0.03 / 365) ** (years * 365), rel=1e-3)

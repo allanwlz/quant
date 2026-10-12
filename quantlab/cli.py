@@ -111,6 +111,8 @@ def timing_study(args, con):
     else:
         bases = [(m, a, prm, 'all') for m, a, prm in bases]
     px = timing.index_close(con, timing.BENCHMARK[args.market], p.dates)
+    cash = timing.cash_rate(con, args.market, p.dates)
+    logging.info('平均现金利率 %.2f%%', cash[np.searchsorted(p.dates, pd.Timestamp(args.start)):].mean() * 100)
     out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-timing"
     out.mkdir(parents=True, exist_ok=True)
     frames = []
@@ -118,7 +120,7 @@ def timing_study(args, con):
         for kind, rp in timing.RULES:
             scale = timing.rule(px, kind, **rp).to_numpy()
             frame = timing.evaluate(p, quality if uni == 'quality' else universe, algo, prm, scale, args.start, mode,
-                                    pools=args.pools)
+                                    pools=args.pools, cash=cash)
             frame.insert(0, 'base', f"{mode}-{uni}-{algo}{json.dumps(prm) if prm else ''}")
             frame.insert(1, 'rule', f"{kind}{json.dumps(rp) if rp else ''}")
             frame['avg_scale'] = scale[np.searchsorted(p.dates, pd.Timestamp(args.start)):].mean()
@@ -140,7 +142,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='quant')
     sub = parser.add_subparsers(dest='command', required=True)
     s = sub.add_parser('sync', help='拉取数据到本地库（可断点续传）')
-    s.add_argument('target', choices=['calendar', 'cn', 'hk', 'us', 'fundamentals'])
+    s.add_argument('target', choices=['calendar', 'cn', 'hk', 'us', 'fundamentals', 'rates'])
     s.add_argument('--start', type=_parse_date, default=DEFAULT_START)
     s.add_argument('--end', type=_parse_date, default=date.today())
     s.add_argument('--codes-file', type=Path, help='美股代码清单，每行一个，如 AAPL.US')
@@ -199,6 +201,8 @@ def main(argv=None):
         sync.sync_cn_securities(con, ts)
         sync.sync_cn_indexes(con, ts, args.start, args.end)
         sync.sync_cn_daily(con, ts, args.start, args.end)
+    elif args.target == 'rates':
+        sync.sync_rates(con, Tushare(settings.tushare_token), args.start, args.end)
     elif args.target == 'fundamentals':
         ts = Tushare(settings.tushare_token)
         sync.sync_cn_industry(con, ts)

@@ -271,3 +271,17 @@ def sync_cn_industry(con, ts):
         cur.execute('DELETE FROM cn_industry')
         db.upsert(cur, 'cn_industry', rows, ['code', 'l3', 'in_date'])
     log.info('申万行业成分 %d 条（%d 只）', len(rows), rows['code'].nunique())
+
+
+RATE_SOURCES = {'CN': ('shibor', 'date,3m', '3m'), 'HK': ('hibor', 'date,3m', '3m'), 'US': ('us_tbr', 'date,w13_ce', 'w13_ce')}
+
+
+def sync_rates(con, ts, start, end):
+    """Short-term cash rates (annual %) used as the return on idle cash in backtests."""
+    for market, (api, fields, col) in RATE_SOURCES.items():
+        frames = [ts.query(api, fields, start_date=_ymd(a), end_date=_ymd(b)) for a, b in _chunks(start, end, 1500)]
+        f = pd.concat(frames, ignore_index=True).dropna(subset=[col])
+        rows = pd.DataFrame({'market': market, 'date': _dates(f['date']), 'rate': f[col].astype(float)}
+                            ).drop_duplicates(['market', 'date'])
+        db.upsert(con, 'rates', rows, ['market', 'date'])
+        log.info('%s 现金利率 %d 条', market, len(rows))
