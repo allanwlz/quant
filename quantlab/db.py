@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS hk_connect(
     date DATE, code TEXT, volume DOUBLE, ratio DOUBLE,  -- southbound holdings, point-in-time eligibility proxy
     PRIMARY KEY(date, code)
 );
+ALTER TABLE securities ADD COLUMN IF NOT EXISTS lot DOUBLE;  -- board lot in shares (HK per stock)
+CREATE TABLE IF NOT EXISTS cn_names(
+    code TEXT, name TEXT, start_date DATE, end_date DATE,     -- name history, used for point-in-time ST status
+    PRIMARY KEY(code, start_date, name)
+);
 CREATE TABLE IF NOT EXISTS sync_state(
     task TEXT, key TEXT, rows INTEGER, synced_at TIMESTAMP DEFAULT now(),
     PRIMARY KEY(task, key)

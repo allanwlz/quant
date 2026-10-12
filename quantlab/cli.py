@@ -1,18 +1,70 @@
 """Command line: ``quant sync cn|hk|us|calendar`` and ``quant status``."""
 import argparse
+import json
 import logging
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+
+import pandas as pd
 
 from . import config, db, sync
 from .sources.tickflow import TickFlow
 from .sources.tushare import Tushare
 
 DEFAULT_START = date(2014, 1, 1)
+RESULTS = config.ROOT.parent / 'test' / 'results'
 
 
 def _parse_date(text):
     return date.fromisoformat(text)
+
+
+def _value(text):
+    """'55' → 55, '0.3' → 0.3, '20/60/120' → (20, 60, 120)."""
+    if '/' in text:
+        return tuple(_value(t) for t in text.split('/'))
+    for kind in (int, float):
+        try:
+            return kind(text)
+        except ValueError:
+            pass
+    return text
+
+
+def _params(items, many=False):
+    out = {}
+    for item in items or []:
+        key, _, value = item.partition('=')
+        out[key] = [_value(v) for v in value.split(',')] if many else _value(value)
+    return out
+
+
+def research(args, con):
+    from . import backtest, research as lab
+    p, universe = lab.prepare(con, args.market, args.start, args.end)
+    logging.info('%s 面板 %d 天 x %d 只，起始日可交易范围 %d 只', args.market, *p.shape,
+                 int(universe[p.dates.searchsorted(str(args.start))].sum()))
+    initial = args.initial or (1e8 if args.mode == 'universe' else 1.5e6)  # universe mode: no lot/min-fee distortion
+    cfg = backtest.Config(base_weight=args.base_weight, band_rel=args.band_rel, band_abs=args.band_abs, initial=initial)
+    common = dict(start=args.start, mode=args.mode, pools=args.pools, pool_size=args.pool_size,
+                  atr_stop=args.atr_stop, cfg=cfg)
+    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-{args.algo}-{args.command}"
+    out.mkdir(parents=True, exist_ok=True)
+    if args.command == 'backtest':
+        summary, detail = lab.evaluate(p, universe, args.algo, _params(args.param), **common)
+        if args.mode == 'universe':
+            detail.nav.to_csv(out / 'nav.csv')
+            detail.trades.to_csv(out / 'trades.csv', index=False)
+        else:
+            detail.to_csv(out / 'pools.csv', index=False)
+        frame = pd.DataFrame([summary])
+    else:
+        frame = lab.sweep(p, universe, args.algo, _params(args.grid, many=True), **common)
+    frame.to_csv(out / 'metrics.csv', index=False)
+    (out / 'args.json').write_text(json.dumps(vars(args), default=str, ensure_ascii=False, indent=1))
+    with pd.option_context('display.width', 200, 'display.max_columns', 30, 'display.float_format', '{:.3f}'.format):
+        print(frame.to_string(index=False))
+    print('结果目录:', out)
 
 
 def status(con):
@@ -32,13 +84,33 @@ def main(argv=None):
     s.add_argument('--end', type=_parse_date, default=date.today())
     s.add_argument('--codes-file', type=Path, help='美股代码清单，每行一个，如 AAPL.US')
     sub.add_parser('status', help='本地库概况')
+    for name, text in (('backtest', '单组参数回测'), ('sweep', '参数网格扫描')):
+        r = sub.add_parser(name, help=text)
+        r.add_argument('--market', choices=['CN', 'HK', 'US'], required=True)
+        r.add_argument('--algo', required=True)
+        r.add_argument('--start', type=_parse_date, default=date(2016, 1, 1))
+        r.add_argument('--end', type=_parse_date, default=date.today())
+        r.add_argument('--mode', choices=['universe', 'pools'], default='universe')
+        r.add_argument('--pools', type=int, default=20, help='pools 模式随机股票池数量')
+        r.add_argument('--pool-size', type=int, default=40)
+        r.add_argument('--atr-stop', type=float, help='ATR 跟踪止损倍数')
+        r.add_argument('--base-weight', type=float, default=0.05)
+        r.add_argument('--band-rel', type=float, default=0.30)
+        r.add_argument('--band-abs', type=float, default=0.015)
+        r.add_argument('--initial', type=float, help='初始资金，默认 universe 1 亿、pools 150 万')
+        if name == 'backtest':
+            r.add_argument('-p', '--param', action='append', help='算法参数，如 -p entry=55 -p lookbacks=20/60/120')
+        else:
+            r.add_argument('-g', '--grid', action='append', help='参数网格，如 -g entry=20,55,100')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     settings = config.load()
-    con = db.connect(settings.db_path, read_only=args.command == 'status')
+    con = db.connect(settings.db_path, read_only=args.command != 'sync')
     if args.command == 'status':
         return status(con)
+    if args.command in ('backtest', 'sweep'):
+        return research(args, con)
 
     if args.target == 'calendar':
         ts = Tushare(settings.tushare_token)

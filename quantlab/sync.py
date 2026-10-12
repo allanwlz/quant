@@ -56,18 +56,37 @@ def sync_cn_securities(con, ts):
                          'status': frame['list_status'], 'currency': 'CNY', 'updated': datetime.now()})
     indexes = pd.DataFrame({'code': list(CN_INDEXES), 'market': 'CN', 'kind': 'index', 'name': list(CN_INDEXES.values()),
                             'status': 'L', 'currency': 'CNY', 'updated': datetime.now()})
+    rows['lot'] = 100.0
     count = db.upsert(con, 'securities', rows, ['code']) + db.upsert(con, 'securities', indexes, ['code'])
     log.info('A 股证券 %d 条（含退市）', count)
+    sync_cn_names(con, ts)
     return count
 
 
+def sync_cn_names(con, ts, page=10000):
+    frames, offset = [], 0
+    while True:
+        frame = ts.query('namechange', 'ts_code,name,start_date,end_date', offset=offset, limit=page)
+        frames.append(frame)
+        if len(frame) < page:
+            break
+        offset += page
+    names = pd.concat(frames, ignore_index=True).dropna(subset=['start_date'])
+    rows = pd.DataFrame({'code': names['ts_code'], 'name': names['name'], 'start_date': _dates(names['start_date']),
+                         'end_date': _dates(names['end_date'])}).drop_duplicates(['code', 'start_date', 'name'])
+    with con.cursor() as cur:
+        cur.execute('DELETE FROM cn_names')
+        db.upsert(cur, 'cn_names', rows, ['code', 'start_date', 'name'])
+    log.info('A 股更名记录 %d 条', len(rows))
+
+
 def sync_hk_securities(con, ts):
-    fields = 'ts_code,name,list_date,delist_date,list_status,market'
+    fields = 'ts_code,name,list_date,delist_date,list_status,market,trade_unit'
     frame = pd.concat([ts.query('hk_basic', fields, list_status=s) for s in ('L', 'D')], ignore_index=True)
     rows = pd.DataFrame({'code': frame['ts_code'].str.zfill(8), 'market': 'HK', 'kind': 'stock', 'name': frame['name'],
                          'board': frame['market'], 'list_date': _dates(frame['list_date']),
                          'delist_date': _dates(frame['delist_date']), 'status': frame['list_status'],
-                         'currency': 'HKD', 'updated': datetime.now()})
+                         'currency': 'HKD', 'lot': frame['trade_unit'], 'updated': datetime.now()})
     return db.upsert(con, 'securities', rows, ['code'])
 
 
@@ -155,8 +174,8 @@ def sync_hk_connect(con, ts, start, end):
 
 def _ensure_security(con, code):
     market = code.rsplit('.', 1)[-1]
-    con.execute("INSERT INTO securities(code,market,kind,currency) VALUES (?,?,'stock',?) ON CONFLICT DO NOTHING",
-                [code, market, {'HK': 'HKD', 'US': 'USD'}[market]])
+    con.execute("INSERT INTO securities(code,market,kind,currency,lot) VALUES (?,?,'stock',?,?) ON CONFLICT DO NOTHING",
+                [code, market, {'HK': 'HKD', 'US': 'USD'}[market], {'HK': None, 'US': 1.0}[market]])
 
 
 def sync_overseas(con, tf, codes, start, end, overlap=10):
