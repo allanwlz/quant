@@ -128,3 +128,24 @@ def evaluate(p, universe, algo, params, scale, start, mode, pools=20, pool_size=
                 m['xsharpe'] = (m['cagr'] - cash[inside].mean()) / m['vol'] if m['vol'] else np.nan
             rows.append({'pool': i, 'period': period, **m})
     return pd.DataFrame(rows)
+
+
+def index_backtest(tr, scale, cash, cost):
+    """Hold ``scale`` of a total-return index and the rest in cash. The scale decided at
+    t's close earns t+1's return; each unit of change in scale pays ``cost``."""
+    r = tr.pct_change().fillna(0).to_numpy()
+    s = np.concatenate([[0.0], scale[:-1]])                 # yesterday's decision
+    days = np.diff(tr.index.values).astype('timedelta64[D]').astype(float)
+    c = np.concatenate([[0.0], cash[:-1] * days / 365])
+    ret = s * r + (1 - s) * c - np.abs(np.diff(s, prepend=0.0)) * cost
+    return pd.Series(np.cumprod(1 + ret), tr.index), pd.Series(c, tr.index)
+
+
+def nav_metrics(nav, cash, lo, hi):
+    inside = (nav.index >= pd.Timestamp(lo)) & (nav.index <= pd.Timestamp(hi))
+    nav, cash = nav[inside], cash[inside]
+    years = (nav.index[-1] - nav.index[0]).days / 365.25
+    cagr = (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1
+    vol = nav.pct_change().std() * np.sqrt(252)
+    cash_cagr = np.prod(1 + cash.iloc[1:]) ** (1 / years) - 1
+    return {'cagr': cagr, 'max_dd': (nav / nav.cummax() - 1).min(), 'xsharpe': (cagr - cash_cagr) / vol}

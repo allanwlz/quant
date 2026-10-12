@@ -14,7 +14,7 @@ from . import db
 log = logging.getLogger(__name__)
 
 CN_INDEXES = {'000300.SH': '沪深300', '000905.SH': '中证500', '000852.SH': '中证1000', '000906.SH': '中证800',
-              '399006.SZ': '创业板指', '000688.SH': '科创50', '000001.SH': '上证指数'}
+              '399006.SZ': '创业板指', '000688.SH': '科创50', '000001.SH': '上证指数', 'H00300.CSI': '沪深300全收益'}
 CALENDAR_APIS = {'CN': ('trade_cal', {'exchange': 'SSE'}), 'HK': ('hk_tradecal', {}), 'US': ('us_tradecal', {})}
 
 
