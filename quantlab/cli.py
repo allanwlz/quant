@@ -44,7 +44,7 @@ def research(args, con):
     p, universe = lab.prepare(con, args.market, args.start, args.end)
     logging.info('%s 面板 %d 天 x %d 只，起始日可交易范围 %d 只', args.market, *p.shape,
                  int(universe[p.dates.searchsorted(str(args.start))].sum()))
-    initial = args.initial or (1e8 if args.mode == 'universe' else 1.5e6)  # universe mode: no lot/min-fee distortion
+    initial = args.initial or 1e8  # study the algorithm, not lot rounding or minimum fees
     cfg = backtest.Config(base_weight=args.base_weight, band_rel=args.band_rel, band_abs=args.band_abs, initial=initial)
     common = dict(start=args.start, mode=args.mode, pools=args.pools, pool_size=args.pool_size,
                   atr_stop=args.atr_stop, cfg=cfg)
@@ -64,6 +64,29 @@ def research(args, con):
     (out / 'args.json').write_text(json.dumps(vars(args), default=str, ensure_ascii=False, indent=1))
     with pd.option_context('display.width', 200, 'display.max_columns', 30, 'display.float_format', '{:.3f}'.format):
         print(frame.to_string(index=False))
+    print('结果目录:', out)
+
+
+def study(args, con):
+    """Run every algorithm x parameter x ATR stop in ``studies.GRIDS`` on one market."""
+    from . import backtest, research as lab, studies
+    p, universe = lab.prepare(con, args.market, args.start, args.end)
+    cfg = backtest.Config(initial=1e8)
+    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-study-{args.mode}"
+    out.mkdir(parents=True, exist_ok=True)
+    rows, todo = [], list(studies.runs())
+    logging.info('%s 面板 %d 天 x %d 只，共 %d 组', args.market, *p.shape, len(todo))
+    for i, (algo, params, stop) in enumerate(todo, 1):
+        summary, _ = lab.evaluate(p, universe, algo, params, args.start, mode=args.mode, pools=args.pools,
+                                  atr_stop=stop, cfg=cfg)
+        rows.append({'algo': algo, 'params': json.dumps(params), 'atr_stop': stop, **summary})
+        if i % 10 == 0 or i == len(todo):
+            pd.DataFrame(rows).to_csv(out / 'study.csv', index=False)   # partial results survive a crash
+            logging.info('%d/%d', i, len(todo))
+    frame = pd.DataFrame(rows)
+    key = 'calmar' if args.mode == 'universe' else 'calmar_p50'
+    with pd.option_context('display.width', 220, 'display.max_columns', 20, 'display.float_format', '{:.3f}'.format):
+        print(frame.sort_values(key, ascending=False).head(25).to_string(index=False))
     print('结果目录:', out)
 
 
@@ -97,11 +120,17 @@ def main(argv=None):
         r.add_argument('--base-weight', type=float, default=0.05)
         r.add_argument('--band-rel', type=float, default=0.30)
         r.add_argument('--band-abs', type=float, default=0.015)
-        r.add_argument('--initial', type=float, help='初始资金，默认 universe 1 亿、pools 150 万')
+        r.add_argument('--initial', type=float, help='初始资金，默认 1 亿')
         if name == 'backtest':
             r.add_argument('-p', '--param', action='append', help='算法参数，如 -p entry=55 -p lookbacks=20/60/120')
         else:
             r.add_argument('-g', '--grid', action='append', help='参数网格，如 -g entry=20,55,100')
+    r = sub.add_parser('study', help='标准网格：所有算法 x 参数 x ATR 止损')
+    r.add_argument('--market', choices=['CN', 'HK', 'US'], required=True)
+    r.add_argument('--start', type=_parse_date, default=date(2016, 1, 1))
+    r.add_argument('--end', type=_parse_date, default=date.today())
+    r.add_argument('--mode', choices=['universe', 'pools'], default='universe')
+    r.add_argument('--pools', type=int, default=20)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -111,6 +140,8 @@ def main(argv=None):
         return status(con)
     if args.command in ('backtest', 'sweep'):
         return research(args, con)
+    if args.command == 'study':
+        return study(args, con)
 
     if args.target == 'calendar':
         ts = Tushare(settings.tushare_token)
