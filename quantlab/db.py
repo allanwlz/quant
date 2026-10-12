@@ -47,6 +47,21 @@ CREATE TABLE IF NOT EXISTS cn_names(
     code TEXT, name TEXT, start_date DATE, end_date DATE,     -- name history, used for point-in-time ST status
     PRIMARY KEY(code, start_date, name)
 );
+CREATE TABLE IF NOT EXISTS cn_fina(
+    code TEXT, end_date DATE, ann_date DATE,             -- one row per announcement (restatements kept)
+    roe DOUBLE, roe_dt DOUBLE, roic DOUBLE, gross_margin DOUBLE, net_margin DOUBLE,
+    revenue_yoy DOUBLE, profit_yoy DOUBLE, debt_to_assets DOUBLE,
+    PRIMARY KEY(code, end_date, ann_date)
+);
+CREATE TABLE IF NOT EXISTS cn_income(
+    code TEXT, end_date DATE, ann_date DATE,              -- cumulative year-to-date figures, consolidated
+    revenue DOUBLE, total_revenue DOUBLE, net_profit DOUBLE,
+    PRIMARY KEY(code, end_date, ann_date)
+);
+CREATE TABLE IF NOT EXISTS cn_industry(
+    code TEXT, l1 TEXT, l2 TEXT, l3 TEXT, in_date DATE, out_date DATE,   -- Shenwan 2021 membership spans
+    PRIMARY KEY(code, l3, in_date)
+);
 CREATE TABLE IF NOT EXISTS sync_state(
     task TEXT, key TEXT, rows INTEGER, synced_at TIMESTAMP DEFAULT now(),
     PRIMARY KEY(task, key)

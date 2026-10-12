@@ -208,3 +208,66 @@ def sync_overseas(con, tf, codes, start, end, overlap=10):
         if i % 25 == 0 or i == len(codes):
             log.info('海外 %d/%d %s：%d 条', i, len(codes), code, len(frame))
     return failed
+
+
+def _paged(ts, api, fields, page=6000, **params):
+    frames, offset = [], 0
+    while True:
+        frame = ts.query(api, fields, offset=offset, limit=page, **params)
+        frames.append(frame)
+        if len(frame) < page:
+            return pd.concat(frames, ignore_index=True)
+        offset += page
+
+
+def _periods(start_year):
+    today = date.today()
+    return [date(y, m, d) for y in range(start_year, today.year + 1)
+            for m, d in ((3, 31), (6, 30), (9, 30), (12, 31)) if date(y, m, d) < today]
+
+
+def sync_cn_fundamentals(con, ts, start_year=2011, refresh_recent=4):
+    """Quarterly financial indicators and income statements for all A-shares, with
+    announcement dates so research can use only what was public at the time.
+    The last ``refresh_recent`` periods are re-pulled to pick up late filers."""
+    periods = _periods(start_year)
+    done = db.done_keys(con, 'cn_fina')
+    todo = [p for p in periods if p.isoformat() not in done or p in periods[-refresh_recent:]]
+    fina_fields = 'ts_code,ann_date,end_date,roe,roe_dt,roic,grossprofit_margin,netprofit_margin,or_yoy,netprofit_yoy,debt_to_assets'
+    for period in todo:
+        fina = _paged(ts, 'fina_indicator_vip', fina_fields, period=_ymd(period))
+        income = _paged(ts, 'income_vip', 'ts_code,ann_date,end_date,report_type,revenue,total_revenue,n_income_attr_p',
+                        period=_ymd(period), report_type='1')
+        fina = pd.DataFrame({'code': fina['ts_code'], 'end_date': _dates(fina['end_date']), 'ann_date': _dates(fina['ann_date']),
+                             'roe': fina['roe'], 'roe_dt': fina['roe_dt'], 'roic': fina['roic'],
+                             'gross_margin': fina['grossprofit_margin'], 'net_margin': fina['netprofit_margin'],
+                             'revenue_yoy': fina['or_yoy'], 'profit_yoy': fina['netprofit_yoy'],
+                             'debt_to_assets': fina['debt_to_assets']}).dropna(subset=['ann_date'])
+        income = pd.DataFrame({'code': income['ts_code'], 'end_date': _dates(income['end_date']),
+                               'ann_date': _dates(income['ann_date']), 'revenue': income['revenue'],
+                               'total_revenue': income['total_revenue'], 'net_profit': income['n_income_attr_p']}
+                              ).dropna(subset=['ann_date'])
+        with con.cursor() as cur:
+            cur.execute('BEGIN')
+            db.upsert(cur, 'cn_fina', fina.drop_duplicates(['code', 'end_date', 'ann_date'], keep='last'),
+                      ['code', 'end_date', 'ann_date'])
+            db.upsert(cur, 'cn_income', income.drop_duplicates(['code', 'end_date', 'ann_date'], keep='last'),
+                      ['code', 'end_date', 'ann_date'])
+            db.mark_done(cur, 'cn_fina', period.isoformat(), len(fina))
+            cur.execute('COMMIT')
+        log.info('财务 %s：指标 %d 条，利润表 %d 条', period, len(fina), len(income))
+
+
+def sync_cn_industry(con, ts):
+    """Shenwan 2021 L1/L2/L3 membership with in/out dates (current and historical members)."""
+    l1 = ts.query('index_classify', 'index_code', level='L1', src='SW2021')['index_code']
+    frames = [_paged(ts, 'index_member_all', 'l1_name,l2_name,l3_name,ts_code,in_date,out_date', l1_code=code, is_new=flag)
+              for code in l1 for flag in ('Y', 'N')]
+    m = pd.concat(frames, ignore_index=True)
+    rows = pd.DataFrame({'code': m['ts_code'], 'l1': m['l1_name'], 'l2': m['l2_name'], 'l3': m['l3_name'],
+                         'in_date': _dates(m['in_date']), 'out_date': _dates(m['out_date'])}
+                        ).dropna(subset=['in_date']).drop_duplicates(['code', 'l3', 'in_date'])
+    with con.cursor() as cur:
+        cur.execute('DELETE FROM cn_industry')
+        db.upsert(cur, 'cn_industry', rows, ['code', 'l3', 'in_date'])
+    log.info('申万行业成分 %d 条（%d 只）', len(rows), rows['code'].nunique())

@@ -71,8 +71,12 @@ def study(args, con):
     """Run every algorithm x parameter x ATR stop in ``studies.GRIDS`` on one market."""
     from . import backtest, research as lab, studies
     p, universe = lab.prepare(con, args.market, args.start, args.end)
+    if args.pool_filter == 'quality':
+        from . import quality
+        universe &= quality.mask(p, con)
     cfg = backtest.Config(initial=1e8)
-    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-study-{args.mode}{'-short' if args.shortlist else ''}"
+    tag = f"{args.mode}{'-' + args.pool_filter if args.pool_filter else ''}{'-short' if args.shortlist else ''}"
+    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-study-{tag}"
     out.mkdir(parents=True, exist_ok=True)
     rows, todo = [], list(studies.SHORTLIST if args.shortlist else studies.runs())
     logging.info('%s 面板 %d 天 x %d 只，共 %d 组', args.market, *p.shape, len(todo))
@@ -102,7 +106,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='quant')
     sub = parser.add_subparsers(dest='command', required=True)
     s = sub.add_parser('sync', help='拉取数据到本地库（可断点续传）')
-    s.add_argument('target', choices=['calendar', 'cn', 'hk', 'us'])
+    s.add_argument('target', choices=['calendar', 'cn', 'hk', 'us', 'fundamentals'])
     s.add_argument('--start', type=_parse_date, default=DEFAULT_START)
     s.add_argument('--end', type=_parse_date, default=date.today())
     s.add_argument('--codes-file', type=Path, help='美股代码清单，每行一个，如 AAPL.US')
@@ -132,6 +136,7 @@ def main(argv=None):
     r.add_argument('--mode', choices=['universe', 'pools'], default='universe')
     r.add_argument('--pools', type=int, default=20)
     r.add_argument('--shortlist', action='store_true', help='只跑 studies.SHORTLIST（pools 模式较慢时用）')
+    r.add_argument('--pool-filter', choices=['quality'], help='先用时点选股规则缩小可选范围（仅 CN）')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -153,6 +158,10 @@ def main(argv=None):
         sync.sync_cn_securities(con, ts)
         sync.sync_cn_indexes(con, ts, args.start, args.end)
         sync.sync_cn_daily(con, ts, args.start, args.end)
+    elif args.target == 'fundamentals':
+        ts = Tushare(settings.tushare_token)
+        sync.sync_cn_industry(con, ts)
+        sync.sync_cn_fundamentals(con, ts)
     elif args.target == 'hk':
         ts = Tushare(settings.tushare_token)
         sync.sync_hk_securities(con, ts)

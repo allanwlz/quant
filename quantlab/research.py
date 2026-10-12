@@ -3,7 +3,9 @@
 ``universe`` mode holds every in-universe security with a signal (pure timing value,
 hundreds of names). ``pools`` mode mimics the real workflow: a 20-50 name pool that
 is refreshed every two weeks, here drawn at random so it carries no selection skill;
-repeated draws give a distribution instead of one lucky path.
+repeated draws give a distribution instead of one lucky path. Names dropped from the
+pool keep their position until the trend signal exits (the live rule), so pool turnover
+must stay realistic or dropped names pile up.
 """
 import itertools
 from datetime import date, timedelta
@@ -22,7 +24,7 @@ def prepare(con, market, start, end):
     return p, universe_mod.build(p, con)
 
 
-def random_pools(universe, size, rng, refresh=10, turnover=0.2):
+def random_pools(universe, size, rng, refresh=10, turnover=0.1):
     """Bool [T, N]: a pool of ``size`` names, re-checked every ``refresh`` days; members
     that left the universe plus a ``turnover`` share of the rest are replaced at random."""
     T, N = universe.shape
@@ -43,18 +45,22 @@ def random_pools(universe, size, rng, refresh=10, turnover=0.2):
 
 
 def evaluate(p, universe, algo, params, start, mode='universe', pools=20, pool_size=40, seed=0,
-             atr_stop=None, cfg=backtest.Config()):
+             atr_stop=None, cfg=backtest.Config(), pool_turnover=0.1):
     hold = signals.compute(p, algo, atr_stop=atr_stop, **params)
     first = np.searchsorted(p.dates, pd.Timestamp(start))
     hold[:first] = False                        # start in cash on ``start``
     if mode == 'universe':
+        if algo == 'buy_hold':                  # baseline holds exactly the current universe
+            hold &= universe
         result = backtest.run(p, hold, universe, cfg)
         return backtest.metrics(result, start), result
     rng = np.random.default_rng(seed)
     rows = []
     for _ in range(pools):
-        pool = random_pools(universe, pool_size, rng) & universe
-        rows.append(backtest.metrics(backtest.run(p, hold, pool, cfg), start))
+        pool = random_pools(universe, pool_size, rng, turnover=pool_turnover) & universe
+        # buy_hold never signals an exit, so as a baseline it holds exactly the current pool
+        pool_hold = (pool & hold) if algo == 'buy_hold' else hold
+        rows.append(backtest.metrics(backtest.run(p, pool_hold, pool, cfg), start))
     frame = pd.DataFrame(rows)
     summary = {f'{k}_p50': v for k, v in frame.median().items()}
     summary.update({f'{k}_p10': frame[k].quantile(0.1) for k in ('cagr', 'max_dd', 'calmar')})
