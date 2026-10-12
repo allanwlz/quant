@@ -5,6 +5,7 @@ import logging
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from . import config, db, sync
@@ -94,6 +95,39 @@ def study(args, con):
     print('结果目录:', out)
 
 
+def timing_study(args, con):
+    """Market timing rules (``timing.RULES``) overlaid on a few base strategies."""
+    from . import research as lab, timing
+    p, universe = lab.prepare(con, args.market, args.start, args.end)
+    quality = None
+    if args.market == 'CN':
+        from . import quality as q
+        quality = universe & q.mask(p, con)
+    bases = [('pools', 'buy_hold', {}), ('universe', 'buy_hold', {})]
+    bases += ([('pools', 'ma_cross', {'fast': 100, 'slow': 300})] if args.market == 'CN'
+              else [('pools', 'donchian', {'entry': 200, 'exit': 100})])
+    if quality is not None:
+        bases = [(m, a, prm, 'quality') for m, a, prm in bases] + [('pools', 'buy_hold', {}, 'all')]
+    else:
+        bases = [(m, a, prm, 'all') for m, a, prm in bases]
+    px = timing.index_close(con, timing.BENCHMARK[args.market], p.dates)
+    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-timing"
+    out.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for mode, algo, prm, uni in bases:
+        for kind, rp in timing.RULES:
+            scale = timing.rule(px, kind, **rp).to_numpy()
+            frame = timing.evaluate(p, quality if uni == 'quality' else universe, algo, prm, scale, args.start, mode,
+                                    pools=args.pools)
+            frame.insert(0, 'base', f"{mode}-{uni}-{algo}{json.dumps(prm) if prm else ''}")
+            frame.insert(1, 'rule', f"{kind}{json.dumps(rp) if rp else ''}")
+            frame['avg_scale'] = scale[np.searchsorted(p.dates, pd.Timestamp(args.start)):].mean()
+            frames.append(frame)
+            pd.concat(frames).to_csv(out / 'timing.csv', index=False)
+            logging.info('%s %s %s 完成', mode, algo, kind)
+    print('结果目录:', out)
+
+
 def status(con):
     print('证券:', con.execute('SELECT market, kind, count(*) FROM securities GROUP BY ALL ORDER BY ALL').fetchall())
     print('日历:', con.execute('SELECT market, min(date), max(date), count(*) FROM calendar GROUP BY ALL ORDER BY ALL').fetchall())
@@ -137,6 +171,11 @@ def main(argv=None):
     r.add_argument('--pools', type=int, default=20)
     r.add_argument('--shortlist', action='store_true', help='只跑 studies.SHORTLIST（pools 模式较慢时用）')
     r.add_argument('--pool-filter', choices=['quality'], help='先用时点选股规则缩小可选范围（仅 CN）')
+    r = sub.add_parser('timing', help='大盘择时规则叠加在基础策略上（总仓位缩放）')
+    r.add_argument('--market', choices=['CN', 'HK', 'US'], required=True)
+    r.add_argument('--start', type=_parse_date, default=date(2016, 1, 1))
+    r.add_argument('--end', type=_parse_date, default=date.today())
+    r.add_argument('--pools', type=int, default=20)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -148,6 +187,8 @@ def main(argv=None):
         return research(args, con)
     if args.command == 'study':
         return study(args, con)
+    if args.command == 'timing':
+        return timing_study(args, con)
 
     if args.target == 'calendar':
         ts = Tushare(settings.tushare_token)

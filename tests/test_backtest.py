@@ -105,3 +105,29 @@ def test_random_pools_respect_universe_and_size():
     assert (pools.sum(axis=1) == 30).all()
     assert not pools[:, :10].any()
     assert (pools[9] != pools[10]).any() and (pools[10] == pools[19]).all()   # changes only on refresh days
+
+
+def test_timing_rules_use_month_end_and_quarters():
+    import pandas as pd
+    from quantlab import timing
+    idx = pd.bdate_range('2020-01-01', periods=600)
+    px = pd.Series(np.linspace(100, 200, 600), idx)
+    px.iloc[400:] = np.linspace(200, 100, 200)
+    ma = timing.rule(px, 'ma', n=50)
+    assert set(ma.unique()) <= {0.0, 1.0}
+    flips = ma.index[ma.diff().fillna(0) != 0]
+    month_ends = set(idx.to_series().groupby(idx.to_period('M')).max())
+    assert len(flips) and set(flips) <= month_ends                   # decided at a month-end close
+    vol = timing.rule(px, 'vol', n=20)
+    assert ((vol * 4) % 1 == 0).all() and vol.max() <= 1.0
+
+
+def test_scale_cuts_candidates_and_frozen_alike():
+    panel = make_panel(np.full((5, 2), 10.0))
+    hold = np.ones((5, 2), bool)
+    entry = np.ones((5, 2), bool)
+    entry[2:, 1] = False                                    # S1 leaves the pool on day 2 -> frozen
+    scale = np.array([1, 1, 1, 0.5, 0.5])
+    result = backtest.run(panel, hold, entry, backtest.Config(base_weight=0.5), scale)
+    assert result.exposure.iloc[2] == pytest.approx(1.0, abs=0.01)
+    assert result.exposure.iloc[4] == pytest.approx(0.5, abs=0.01)   # both halves trimmed on day 4

@@ -7,6 +7,10 @@ signal is on but which left the entry set are frozen (no adds, no trims) and wai
 for the signal to exit. Existing positions are only resized when the gap exceeds
 both ``band_rel`` of the target and ``band_abs`` of NAV.
 
+Market timing: an optional ``scale`` series in [0, 1] multiplies every target. When it
+changes, all candidates are resized regardless of the band, and when it falls, frozen
+holdings are trimmed by the same ratio (they are never added to).
+
 Timing: decide on day t's close, trade at day t+1's open with slippage. CN buys
 are blocked when t+1 opens at the up limit, sells when it opens at the down limit;
 suspended securities cannot trade. Positions are tracked in back-adjusted units,
@@ -42,7 +46,7 @@ def _costs(value, rate, minimum, extra):
     return np.where(value > 0, np.maximum(value * rate, minimum), 0.0) + value * extra
 
 
-def run(panel, hold, entry_ok, cfg=Config()):
+def run(panel, hold, entry_ok, cfg=Config(), scale=None):
     T, N = panel.shape
     rules = markets.RULES[panel.market]
     days = panel.dates.date
@@ -52,6 +56,8 @@ def run(panel, hold, entry_ok, cfg=Config()):
     lot = np.where(np.isnan(panel.lot), rules.lot, panel.lot)
     if panel.market == 'CN':
         up, down = panel['up_limit'], panel['down_limit']
+    scale = np.ones(T) if scale is None else np.asarray(scale, dtype=np.float64)
+    applied = scale[0]
     q = np.zeros(N)                    # holdings in back-adjusted units
     cash = cfg.initial
     nav, exposure, npos, trades = np.empty(T), np.empty(T), np.empty(T, dtype=np.int32), []
@@ -71,9 +77,14 @@ def run(panel, hold, entry_ok, cfg=Config()):
         n = cand.sum()
         if n:
             room = max(0.0, cfg.gross - value[frozen].sum() / total)
-            target[cand] = cfg.base_weight * min(1.0, room / (cfg.base_weight * n))
+            target[cand] = cfg.base_weight * min(1.0, room / (cfg.base_weight * n)) * scale[t]
         gap = target - value / total
-        resize = cand & (~held | (np.abs(gap) > np.maximum(cfg.band_rel * target, cfg.band_abs)))
+        changed = scale[t] != applied
+        resize = cand & (~held | changed | (np.abs(gap) > np.maximum(cfg.band_rel * target, cfg.band_abs)))
+        if changed and scale[t] < applied:
+            gap[frozen] = value[frozen] / total * (scale[t] / applied - 1)
+            resize |= frozen
+        applied = scale[t]
         if not (resize.any() or exits.any()):
             continue
 
@@ -121,9 +132,11 @@ def run(panel, hold, entry_ok, cfg=Config()):
     return Result(pd.Series(nav, index), pd.Series(exposure, index), pd.Series(npos, index), trade_frame)
 
 
-def metrics(result, start=None):
-    nav = result.nav if start is None else result.nav[result.nav.index >= pd.Timestamp(start)]
-    trades = result.trades if start is None else result.trades[result.trades['date'] >= pd.Timestamp(start)]
+def metrics(result, start=None, end=None):
+    lo = pd.Timestamp(start) if start is not None else result.nav.index[0]
+    hi = pd.Timestamp(end) if end is not None else result.nav.index[-1]
+    nav = result.nav[(result.nav.index >= lo) & (result.nav.index <= hi)]
+    trades = result.trades[(result.trades['date'] >= lo) & (result.trades['date'] <= hi)]
     years = max(len(nav) - 1, 1) / 252
     returns = nav.pct_change().dropna()
     cagr = (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1
