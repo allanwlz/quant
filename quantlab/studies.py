@@ -24,3 +24,20 @@ def runs():
                 if algo == 'donchian' and params['exit'] >= params['entry']:
                     continue
                 yield algo, params, stop
+
+# Plateau picks from the universe-mode studies (docs/discussion.md), for the slower pools mode.
+SHORTLIST = [
+    ('buy_hold', {}, None),
+    ('above_ma', {'n': 200}, None),
+    ('above_ma', {'n': 200}, 5.0),
+    ('ma_cross', {'fast': 50, 'slow': 200}, None),
+    ('ma_cross', {'fast': 100, 'slow': 300}, None),
+    ('donchian', {'entry': 55, 'exit': 20}, None),
+    ('donchian', {'entry': 200, 'exit': 100}, None),
+    ('tsmom', {'lookbacks': (60, 120, 250)}, None),
+    ('slope_r2', {'n': 250, 'min_slope': 0.2, 'min_r2': 0.3}, None),
+    ('slope_r2', {'n': 120, 'min_slope': 0.4, 'min_r2': 0.3}, None),
+    ('volume_breakout', {'n': 55, 'vol_mult': 2.0, 'exit_ma': 50}, None),
+    ('volume_breakout', {'n': 100, 'vol_mult': 2.0, 'exit_ma': 50}, None),
+    ('volume_breakout', {'n': 55, 'vol_mult': 2.0, 'exit_ma': 100}, 3.0),
+]

@@ -72,9 +72,9 @@ def study(args, con):
     from . import backtest, research as lab, studies
     p, universe = lab.prepare(con, args.market, args.start, args.end)
     cfg = backtest.Config(initial=1e8)
-    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-study-{args.mode}"
+    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-study-{args.mode}{'-short' if args.shortlist else ''}"
     out.mkdir(parents=True, exist_ok=True)
-    rows, todo = [], list(studies.runs())
+    rows, todo = [], list(studies.SHORTLIST if args.shortlist else studies.runs())
     logging.info('%s 面板 %d 天 x %d 只，共 %d 组', args.market, *p.shape, len(todo))
     for i, (algo, params, stop) in enumerate(todo, 1):
         summary, _ = lab.evaluate(p, universe, algo, params, args.start, mode=args.mode, pools=args.pools,
@@ -131,6 +131,7 @@ def main(argv=None):
     r.add_argument('--end', type=_parse_date, default=date.today())
     r.add_argument('--mode', choices=['universe', 'pools'], default='universe')
     r.add_argument('--pools', type=int, default=20)
+    r.add_argument('--shortlist', action='store_true', help='只跑 studies.SHORTLIST（pools 模式较慢时用）')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
