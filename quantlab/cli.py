@@ -113,12 +113,17 @@ def timing_study(args, con):
     px = timing.index_close(con, timing.BENCHMARK[args.market], p.dates)
     cash = timing.cash_rate(con, args.market, p.dates)
     logging.info('平均现金利率 %.2f%%', cash[np.searchsorted(p.dates, pd.Timestamp(args.start)):].mean() * 100)
-    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-timing"
+    out = RESULTS / f"{datetime.now():%Y%m%d-%H%M%S}-{args.market}-timing{'' if args.rules == 'all' else '-' + args.rules}"
     out.mkdir(parents=True, exist_ok=True)
     frames = []
+    rules = [] if args.rules == 'cd' else list(timing.RULES)
+    market = None
+    if args.market == 'CN' and args.rules != 'ab':
+        market = timing.cn_market(con, p.dates)
+        rules += ([('none', {})] if args.rules == 'cd' else []) + timing.CN_RULES
     for mode, algo, prm, uni in bases:
-        for kind, rp in timing.RULES:
-            scale = timing.rule(px, kind, **rp).to_numpy()
+        for kind, rp in rules:
+            scale = timing.rule(px, kind, market=market, **rp).to_numpy()
             frame = timing.evaluate(p, quality if uni == 'quality' else universe, algo, prm, scale, args.start, mode,
                                     pools=args.pools, cash=cash)
             frame.insert(0, 'base', f"{mode}-{uni}-{algo}{json.dumps(prm) if prm else ''}")
@@ -178,6 +183,7 @@ def main(argv=None):
     r.add_argument('--start', type=_parse_date, default=date(2016, 1, 1))
     r.add_argument('--end', type=_parse_date, default=date.today())
     r.add_argument('--pools', type=int, default=20)
+    r.add_argument('--rules', choices=['all', 'ab', 'cd'], default='all', help='ab：趋势与波动率；cd：估值与拥挤度（仅 CN）')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -202,7 +208,9 @@ def main(argv=None):
         sync.sync_cn_indexes(con, ts, args.start, args.end)
         sync.sync_cn_daily(con, ts, args.start, args.end)
     elif args.target == 'rates':
-        sync.sync_rates(con, Tushare(settings.tushare_token), args.start, args.end)
+        ts = Tushare(settings.tushare_token)
+        sync.sync_rates(con, ts, args.start, args.end)
+        sync.sync_index_basic(con, ts, args.start, args.end)
     elif args.target == 'fundamentals':
         ts = Tushare(settings.tushare_token)
         sync.sync_cn_industry(con, ts)

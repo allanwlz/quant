@@ -9,6 +9,10 @@ Each rule has one or two parameters and reads only data up to the decision day's
 - ``vol``: scale = target / realized vol over n days, capped at 1 and rounded to quarters;
   target = k x the expanding median of that realized vol, so no level is fitted in hindsight.
 - ``ma+vol``: product of the two.
+- ``value`` (CN): market earnings yield minus the cash rate, ranked against its own history;
+  scale 0.5 / 0.75 / 1 in its bottom / middle / top third, checked at month end.
+- ``crowd`` (CN): 20-day free-float turnover of the whole market; scale 0.5 while it sits
+  above the ``q`` percentile of its own history, else 1.
 """
 import itertools
 
@@ -36,6 +40,26 @@ def cash_rate(con, market, dates):
     return r.reindex(r.index.union(dates)).ffill().reindex(dates).fillna(0.0).to_numpy()
 
 
+def cn_market(con, dates, code='000300.SH'):
+    """Index earnings yield (1 / PE TTM) and 20-day free-float turnover, plus the cash rate,
+    with history back to 2005 so percentiles are not dominated by one episode."""
+    rows = con.execute('SELECT date, 1 / pe_ttm AS ep, turnover_rate_f AS turnover FROM index_basic WHERE code=? ORDER BY date',
+                       [code]).df()
+    frame = rows.set_index(pd.to_datetime(rows['date']))[['ep', 'turnover']]
+    frame['turnover'] = frame['turnover'].rolling(20, min_periods=20).mean()
+    rates = con.execute("SELECT date, rate / 100 AS cash FROM rates WHERE market='CN' ORDER BY date").df()
+    frame = frame.join(rates.set_index(pd.to_datetime(rates['date']))['cash'], how='left').ffill()
+    frame['ep_gap'] = frame['ep'] - frame['cash']
+    frame['value_pct'] = _pct(frame['ep_gap'].dropna()).reindex(frame.index)   # point-in-time rank over all history since 2005
+    frame['heat_pct'] = _pct(frame['turnover'].dropna()).reindex(frame.index)
+    return frame.reindex(frame.index.union(dates)).ffill().reindex(dates)
+
+
+def _pct(series, min_periods=500):
+    """Expanding percentile of today's value within its own history (no look-ahead)."""
+    return series.expanding(min_periods=min_periods).rank(pct=True)
+
+
 def _month_end(raw):
     """Hold each month-end reading until the next month end."""
     idx = raw.index
@@ -43,7 +67,7 @@ def _month_end(raw):
     return raw.where(last).ffill().fillna(1.0)
 
 
-def rule(px, kind, n=200, k=1.0, vol_n=20):
+def rule(px, kind, n=200, k=1.0, vol_n=20, q=0.9, market=None):
     if kind == 'none':
         return pd.Series(1.0, px.index)
     if kind == 'ma':
@@ -57,6 +81,11 @@ def rule(px, kind, n=200, k=1.0, vol_n=20):
         target = k * sigma.expanding(min_periods=250).median()
         raw = (target / sigma).clip(upper=1.0)
         return (np.floor(raw / STEP) * STEP).fillna(1.0)
+    if kind == 'value':
+        pct = market['value_pct']
+        return _month_end(pd.Series(np.select([pct < 1 / 3, pct < 2 / 3], [0.5, 0.75], 1.0), px.index).where(pct.notna()))
+    if kind == 'crowd':
+        return pd.Series(np.where(market['heat_pct'] > q, 0.5, 1.0), px.index)
     if kind == 'ma+vol':
         return rule(px, 'ma', n=n) * rule(px, 'vol', n=vol_n, k=k)
     raise ValueError(kind)
@@ -67,6 +96,9 @@ RULES = ([('none', {})]
          + [('mom', {'n': n}) for n in (120, 250)]
          + [('vol', {'n': n, 'k': k}) for n, k in itertools.product((20, 60), (0.8, 1.0, 1.2))]
          + [('ma+vol', {'n': 200, 'vol_n': 20, 'k': 1.0})])
+
+
+CN_RULES = [('value', {})] + [('crowd', {'q': q}) for q in (0.8, 0.9, 0.95)]
 
 
 def _periods(start, end):

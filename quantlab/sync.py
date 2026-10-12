@@ -285,3 +285,16 @@ def sync_rates(con, ts, start, end):
                             ).drop_duplicates(['market', 'date'])
         db.upsert(con, 'rates', rows, ['market', 'date'])
         log.info('%s 现金利率 %d 条', market, len(rows))
+
+
+def sync_index_basic(con, ts, start, end, codes=('000300.SH', '000905.SH')):
+    """Index valuation and turnover (Tushare index_dailybasic; history from 2004)."""
+    for code in codes:
+        frames = [ts.query('index_dailybasic', 'ts_code,trade_date,pe_ttm,pb,turnover_rate,turnover_rate_f',
+                           ts_code=code, start_date=_ymd(a), end_date=_ymd(b)) for a, b in _chunks(start, end, 2500)]
+        f = pd.concat(frames, ignore_index=True)
+        rows = pd.DataFrame({'code': f['ts_code'], 'date': _dates(f['trade_date']), 'pe_ttm': f['pe_ttm'], 'pb': f['pb'],
+                             'turnover_rate': f['turnover_rate'], 'turnover_rate_f': f['turnover_rate_f']}
+                            ).drop_duplicates(['code', 'date'])
+        db.upsert(con, 'index_basic', rows, ['code', 'date'])
+        log.info('%s 指数估值 %d 条（%s 起）', code, len(rows), rows['date'].min())

@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS cn_industry(
     code TEXT, l1 TEXT, l2 TEXT, l3 TEXT, in_date DATE, out_date DATE,   -- Shenwan 2021 membership spans
     PRIMARY KEY(code, l3, in_date)
 );
+CREATE TABLE IF NOT EXISTS index_basic(
+    code TEXT, date DATE, pe_ttm DOUBLE, pb DOUBLE, turnover_rate DOUBLE, turnover_rate_f DOUBLE,
+    PRIMARY KEY(code, date)
+);
 CREATE TABLE IF NOT EXISTS rates(
     market TEXT, date DATE, rate DOUBLE,                 -- annual cash rate in percent: CN SHIBOR 3M, HK HIBOR 3M, US 13-week T-bill
     PRIMARY KEY(market, date)
