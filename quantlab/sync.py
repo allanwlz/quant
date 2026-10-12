@@ -4,6 +4,7 @@ Every task is resumable: per-date CN pulls are recorded in ``sync_state`` and sk
 on the next run, per-symbol HK/US pulls only request bars after the last stored date.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -78,13 +79,14 @@ def _open_days(con, market, start, end):
 def cn_day(ts, day):
     """All A-share bars for one trading day, merged from daily/adj_factor/stk_limit."""
     key = _ymd(day)
-    bars = ts.query('daily', 'ts_code,open,high,low,close,pre_close,vol,amount', trade_date=key)
+    requests = [('daily', 'ts_code,open,high,low,close,pre_close,vol,amount'),
+                ('adj_factor', 'ts_code,adj_factor'),
+                ('stk_limit', 'ts_code,up_limit,down_limit'),
+                ('daily_basic', 'ts_code,turnover_rate,turnover_rate_f,pe_ttm,pb,total_share,float_share,total_mv,circ_mv')]
+    with ThreadPoolExecutor(len(requests)) as pool:  # latency-bound; Tushare allows 500 calls/min
+        bars, adj, limits, basic = pool.map(lambda r: ts.query(r[0], r[1], trade_date=key), requests)
     if bars.empty:
         return bars, bars
-    adj = ts.query('adj_factor', 'ts_code,adj_factor', trade_date=key)
-    limits = ts.query('stk_limit', 'ts_code,up_limit,down_limit', trade_date=key)
-    basic = ts.query('daily_basic', 'ts_code,turnover_rate,turnover_rate_f,pe_ttm,pb,total_share,float_share,total_mv,circ_mv',
-                     trade_date=key)
     bars = bars.merge(adj, on='ts_code', how='left').merge(limits, on='ts_code', how='left')
     bars = bars.rename(columns={'ts_code': 'code', 'vol': 'volume'})
     bars['volume'] = bars['volume'] * 100      # 手 → 股

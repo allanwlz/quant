@@ -1,4 +1,5 @@
 """Minimal Tushare Pro HTTP client with pacing and retry."""
+import threading
 import time
 
 import httpx
@@ -17,15 +18,16 @@ class Tushare:
             raise TushareError('QUANT_TUSHARE_TOKEN 未配置')
         self.token, self.interval, self.retries = token, interval, retries
         self.client = client or httpx.Client(timeout=60)
-        self._last = 0.0
+        self._last, self._lock = 0.0, threading.Lock()
 
     def query(self, api, fields='', **params):
         """Return a DataFrame; retries network errors and per-minute rate limits."""
         for attempt in range(self.retries):
-            wait = self._last + self.interval - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
-            self._last = time.monotonic()
+            with self._lock:  # pacing is shared across threads
+                wait = self._last + self.interval - time.monotonic()
+                if wait > 0:
+                    time.sleep(wait)
+                self._last = time.monotonic()
             try:
                 response = self.client.post(URL, json={'api_name': api, 'token': self.token,
                                                        'params': params, 'fields': fields})
